@@ -1,16 +1,24 @@
 #include <stdio.h>
+#include <poll.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <systemd/sd-device.h>
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <linux/hidraw.h>
 
 #define INTERFACE_ID 1
 #define VID 0x3554
 #define PID 0xf527
+#define REPORT_SIZE 17
 
 #define NO_MOUSE 2
+
+#define READ_OP 8
+#define WRITE_OP 7
 
 
 enum command {
@@ -34,6 +42,91 @@ struct parsed_args {
 };
 
 
+void add_checksums(uint8_t response[REPORT_SIZE]) {
+    if (response[1] == 0x07) {
+        if (response[5] == 2) {
+            response[7] = (uint8_t)(0x55 - response[6]);
+        } else if (response[5] == 4) {
+            response[9] = (uint8_t)(0x55 - response[6]
+                                         - response[7]
+                                         - response[8]);
+        }
+    }
+
+    uint8_t checksum = 0x55;
+
+    for (int i = 0; i < REPORT_SIZE - 1; i++) {
+        checksum -= response[i];
+    }
+
+    response[REPORT_SIZE - 1] = checksum;
+}
+
+
+
+int send_report(int fd, uint8_t report[REPORT_SIZE]) {
+    int r = ioctl(fd, HIDIOCSOUTPUT(REPORT_SIZE), report);
+
+    if (r < 0) {
+        perror("HIDIOCSOUTPUT");
+        return -1;
+    }
+
+    if (r != REPORT_SIZE) {
+        fprintf(stderr, "Unexpected report size: %d\n", r);
+        return -1;
+    }
+
+    return 0;
+}
+
+int read_report(int fd, uint8_t report[REPORT_SIZE]) {
+    struct pollfd pfd = {
+        .fd = fd,
+        .events = POLLIN
+    };
+
+    int r = poll(&pfd, 1, 1000);
+
+    if (r < 0) {
+        perror("poll");
+        return -1;
+    }
+
+    if (r == 0) {
+        fprintf(stderr, "Mouse not responding (possibly sleeping, try to move it)\n");
+        return -1;
+    }
+
+    if (!(pfd.revents & POLLIN)) {
+        fprintf(stderr, "Unexpected poll event: 0x%x\n", pfd.revents);
+        return -1;
+    }
+
+    ssize_t n = read(fd, report, REPORT_SIZE);
+
+    if (n != REPORT_SIZE) {
+        perror("read");
+        return -1;
+    }
+
+    return 0;
+}
+
+int check_response(uint8_t report[REPORT_SIZE]) {
+    if (report[0] != 0x08 ||
+            report[1] != 0x08) {
+        return -1;
+    }
+    uint8_t sum = 0;
+    for (int i = 0; i < REPORT_SIZE; i++) {
+        sum += report[i];
+    }
+    if (sum != 0x55) {
+        return -1;
+    }
+    return 0;
+}
 
 
 static int parse_int(const char *text, int *result) {
@@ -176,8 +269,39 @@ static int parse_args(int argc, char *argv[],
     return 0;
 }
 
-static int device_show_profile(void) {
-    puts("[stub] show active profile");
+
+static int get_active_profile(int fd, int* profile) {
+    //0x04 - addr, 0x02 - bytes to read
+    *profile = -1;
+    uint8_t rep[REPORT_SIZE] = {0}; 
+    rep[0] = 0x08;
+    rep[1] = READ_OP;
+    rep[4] = 0x04; //addr
+    rep[5] = 0x02; //bytes to read
+    add_checksums(rep);
+    
+    if (send_report(fd, rep)) {
+        return -1;
+    }
+
+    if (read_report(fd, rep)) {
+        return -1;
+    }
+    if (check_response(rep)) {
+        fprintf(stderr, "Invalid report\n");
+        return -1;
+    }
+    
+    *profile = (int)rep[6];
+    return 0;
+}
+
+static int device_show_profile(int fd) {
+    int profile;
+    if (get_active_profile(fd, &profile)) {
+        return -1;
+    }
+    printf("%d\n", profile);
     return 0;
 }
 
@@ -201,7 +325,7 @@ static int device_set_profiles(int n) {
     return 0;
 }
 
-static int device_show_dpi(void) {
+static int device_show_dpi(int fd) {
     puts("[stub] show DPI");
     return 0;
 }
@@ -240,7 +364,7 @@ static int execute_command(const struct parsed_args *args, int fd) {
     switch (args->command) {
     case CMD_PROFILE:
         return args->action == ACTION_SHOW
-            ? device_show_profile()
+            ? device_show_profile(fd)
             : device_set_profile(args->value);
 
     case CMD_PROFILES:
@@ -250,7 +374,7 @@ static int execute_command(const struct parsed_args *args, int fd) {
 
     case CMD_DPI:
         return args->action == ACTION_SHOW
-            ? device_show_dpi()
+            ? device_show_dpi(fd)
             : device_set_dpi(args->value);
 
     case CMD_FREQ:
@@ -357,12 +481,13 @@ int open_hidraw(int *fd) {
     }
 
     r = open(path, O_RDWR);
+    *fd = r;
     if (r == -1) {
-        *fd = r;
         fprintf(stderr, "open: %s\n", strerror(errno));
         sd_device_enumerator_unref(enumerator);
         return -1; 
     }
+
  
     sd_device_enumerator_unref(enumerator);
     return 0;
@@ -384,7 +509,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (execute_command(&args, fd) != 0) {
-        fprintf(stderr, "Failed to execute command\n");
         return EXIT_FAILURE;
     }
 
