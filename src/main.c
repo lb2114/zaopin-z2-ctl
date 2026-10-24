@@ -128,6 +128,33 @@ int check_response(uint8_t report[REPORT_SIZE]) {
     return 0;
 }
 
+// 2 bytes for value (dpi = val * 50), 1 byte for multiplicator (0x00, 0x44, 0x88)
+// this protocol appears to support per-axis DPI configuration, but I haven't checked if the mouse supports
+int decode_dpi(const uint8_t report[REPORT_SIZE], int *dpi) {
+    uint8_t low = report[6];
+    uint8_t high = report[8];
+
+    if (report[7] != low || high % 0x44 != 0) {
+        return -1;
+    }
+    
+    //checksum for a value
+    if ((uint8_t)(low + report[7] + high + report[9]) != 0x55) {
+        return -1;
+    }
+
+    uint16_t n = low | ((uint16_t)(high / 0x44) << 8);
+
+    int value = (n + 1) * 50;
+
+    if (value > 26000) {
+        return -1;
+    }
+
+    *dpi = value;
+    return 0;
+}
+
 
 static int parse_int(const char *text, int *result) {
     char *end;
@@ -271,7 +298,6 @@ static int parse_args(int argc, char *argv[],
 
 
 static int get_active_profile(int fd, int* profile) {
-    //0x04 - addr, 0x02 - bytes to read
     *profile = -1;
     uint8_t rep[REPORT_SIZE] = {0}; 
     rep[0] = 0x08;
@@ -326,7 +352,36 @@ static int device_set_profiles(int n) {
 }
 
 static int device_show_dpi(int fd) {
-    puts("[stub] show DPI");
+    int profile_idx;
+    if (get_active_profile(fd, &profile_idx)) {
+        fprintf(stderr, "Fail to read profile\n");
+        return -1;
+    }
+    uint8_t addr = 0x0c + 4 * profile_idx;
+    uint8_t report[REPORT_SIZE] = {0};
+    report[0] = 0x08;
+    report[1] = 0x08;
+    report[4] = addr;
+    report[5] = 0x04; //amount of bytes to read
+    add_checksums(report);
+
+    if (send_report(fd, report)) {
+        return -1;
+    }
+    if (read_report(fd, report)) {
+        return -1;
+    }
+    if (check_response(report)) {
+        fprintf(stderr, "Invalid report\n");
+        return -1;
+    }
+    int dpi;
+    if (decode_dpi(report, &dpi)) {
+        fprintf(stderr, "Fail to decode dpi\n");
+        return -1;
+    }
+    printf("%d\n", dpi);
+
     return 0;
 }
 
