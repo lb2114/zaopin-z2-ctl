@@ -155,6 +155,21 @@ int decode_dpi(const uint8_t report[REPORT_SIZE], int *dpi) {
     return 0;
 }
 
+int encode_dpi(uint8_t report[REPORT_SIZE], int dpi) {
+    if (dpi < 400 || dpi > 26000 || dpi % 50 != 0) {
+        return -1;
+    }
+
+    uint16_t n = dpi / 50 - 1;
+
+    report[6] = n & 0xFF;
+    report[7] = n & 0xFF;
+    report[8] = (n >> 8) * 0x44;
+    report[9] = (uint8_t)(0x55 - report[6] - report[7] - report[8]);
+
+    return 0;
+}
+
 
 static int parse_int(const char *text, int *result) {
     char *end;
@@ -385,8 +400,27 @@ static int device_show_dpi(int fd) {
     return 0;
 }
 
-static int device_set_dpi(int n) {
-    printf("[stub] set DPI to %d\n", n);
+static int device_set_dpi(int fd, int dpi) {
+    int profile_idx;
+    if (get_active_profile(fd, &profile_idx)) {
+        fprintf(stderr, "Fail to read profile\n");
+        return -1;
+    }
+    uint8_t addr = 0x0c + 4 * profile_idx;
+    uint8_t report[REPORT_SIZE] = {0};
+    report[0] = 0x08;
+    report[1] = 0x07;
+    report[4] = addr;
+    report[5] = 0x04; //amount of bytes to write
+    if (encode_dpi(report, dpi)) {
+        fprintf(stderr, "Invalid value\n");
+        return -1;
+    }
+    add_checksums(report);
+
+    if (send_report(fd, report)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -430,7 +464,7 @@ static int execute_command(const struct parsed_args *args, int fd) {
     case CMD_DPI:
         return args->action == ACTION_SHOW
             ? device_show_dpi(fd)
-            : device_set_dpi(args->value);
+            : device_set_dpi(fd, args->value);
 
     case CMD_FREQ:
         return args->action == ACTION_SHOW
@@ -559,6 +593,7 @@ int main(int argc, char *argv[]) {
     struct parsed_args args;
 
     if (parse_args(argc, argv, &args) != 0) {
+        fprintf(stderr, "Ivalid command\n");
         print_usage(argv[0]);
         return EXIT_FAILURE;
     }
