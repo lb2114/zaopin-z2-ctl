@@ -17,8 +17,8 @@
 
 #define NO_MOUSE 2
 
-#define READ_OP 8
-#define WRITE_OP 7
+#define READ 0x08
+#define WRITE 0x07
 
 
 enum command {
@@ -128,6 +128,47 @@ int check_response(uint8_t report[REPORT_SIZE]) {
     return 0;
 }
 
+
+int exchange_report(int fd, uint8_t rep[REPORT_SIZE], uint8_t cmd, uint8_t addr, uint8_t size, uint8_t* data) {
+    if (cmd != READ && cmd != WRITE ||
+            size > 0x0A) {
+        fprintf(stderr, "invalid cmd idx\n");
+        return -1;
+    }
+    memset(rep, 0, REPORT_SIZE);
+    rep[0] = 0x08;
+    rep[1] = cmd;
+    rep[4] = addr;
+    rep[5] = size;
+    if (cmd == WRITE) {
+        if (data == NULL) {
+            fprintf(stderr, "Null data pointer\n");
+            return -1;
+        }
+        memcpy(&rep[6], data, size);
+    }
+    add_checksums(rep);
+
+    if (send_report(fd, rep)) {
+        return -1;
+    }
+    if (cmd == READ) {
+        if (read_report(fd, rep)) {
+            return -1;
+        }
+        if (rep[4] != addr || rep[5] != size) {
+            fprintf(stderr, "Unexpected response address or size\n");
+            return -1;
+        }
+        if (check_response(rep)) {
+            fprintf(stderr, "Invalid report\n");
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 // 2 bytes for value (dpi = val * 50), 1 byte for multiplicator (0x00, 0x44, 0x88)
 // this protocol appears to support per-axis DPI configuration, but I haven't checked if the mouse supports
 int decode_dpi(const uint8_t report[REPORT_SIZE], int *dpi) {
@@ -135,11 +176,13 @@ int decode_dpi(const uint8_t report[REPORT_SIZE], int *dpi) {
     uint8_t high = report[8];
 
     if (report[7] != low || high % 0x44 != 0) {
+        fprintf(stderr, "Fail to decode dpi\n");
         return -1;
     }
     
     //checksum for a value
     if ((uint8_t)(low + report[7] + high + report[9]) != 0x55) {
+        fprintf(stderr, "Fail to decode dpi\n");
         return -1;
     }
 
@@ -148,6 +191,7 @@ int decode_dpi(const uint8_t report[REPORT_SIZE], int *dpi) {
     int value = (n + 1) * 50;
 
     if (value > 26000) {
+        fprintf(stderr, "Fail to decode dpi\n");
         return -1;
     }
 
@@ -264,7 +308,7 @@ static int parse_args(int argc, char *argv[],
 
     switch (out->command) {
     case CMD_PROFILE:
-        if (value < 0 || value > 5) {
+        if (value < 1 || value > 6) {
             return -1;
         }
         break;
@@ -276,8 +320,8 @@ static int parse_args(int argc, char *argv[],
         break;
 
     case CMD_DPI:
-        if (value < 400 || value > 26000 ||
-            (value - 400) % 50 != 0) {
+        if (value < 50 || value > 26000 ||
+            (value % 50 != 0)) {
             return -1;
         }
         break;
@@ -315,21 +359,7 @@ static int parse_args(int argc, char *argv[],
 static int get_active_profile(int fd, int* profile) {
     *profile = -1;
     uint8_t rep[REPORT_SIZE] = {0}; 
-    rep[0] = 0x08;
-    rep[1] = READ_OP;
-    rep[4] = 0x04; //addr
-    rep[5] = 0x02; //bytes to read
-    add_checksums(rep);
-    
-    if (send_report(fd, rep)) {
-        return -1;
-    }
-
-    if (read_report(fd, rep)) {
-        return -1;
-    }
-    if (check_response(rep)) {
-        fprintf(stderr, "Invalid report\n");
+    if (exchange_report(fd, rep, READ, 0x04, 0x02, NULL)) {
         return -1;
     }
     
@@ -346,23 +376,53 @@ static int device_show_profile(int fd) {
     return 0;
 }
 
-static int device_set_profile(int n) {
-    // TODO: проверить n < текущего количества профилей.
-    printf("[stub] set active profile to %d\n", n);
+static int device_set_profile(int fd, int n) {
+    uint8_t rep[REPORT_SIZE];
+    if (exchange_report(fd, rep, READ, 0x02, 0x02, NULL)) {
+        return -1;
+    }
+    int max_profiles = (int)rep[6];
+    if (n > max_profiles || n < 1) {
+        fprintf(stderr, "Invalid profile\n");
+        return -1;
+    }
+    
+    uint8_t data[2] = {(uint8_t)n - 1, 0};
+    if (exchange_report(fd, rep, WRITE, 0x04, 0x02, data)) {
+        return -1;
+    }
     return 0;
 }
 
-static int device_show_profiles(void) {
-    puts("[stub] show profile count");
+static int device_show_profiles(int fd) {
+    uint8_t rep[REPORT_SIZE];
+    if (exchange_report(fd, rep, READ, 0x02, 0x02, NULL)) {
+        return -1;
+    }
+    int p_count = (int)rep[6];
+    for (int i = 0; i < p_count; i++) {
+        uint8_t addr = 0x0c + 4 * i;
+        if (exchange_report(fd, rep, READ, addr, 0x04, NULL)) {
+            return -1;
+        }
+        int dpi;
+        if (decode_dpi(rep, &dpi)) {
+            return -1;
+        }
+        printf("Profile %d: %d dpi\n", i + 1, dpi);
+    }
     return 0;
 }
 
-static int device_set_profiles(int n) {
-    /*
-     * Уменьшение числа профилей не должно стирать
-     * сохранённые значения DPI.
-     */
-    printf("[stub] set profile count to %d\n", n);
+static int device_set_profiles(int fd, int n) {
+    if (n < 1 || n > 6) {
+        return -1;
+    }
+    uint8_t rep[REPORT_SIZE];
+    uint8_t data[2] = {(uint8_t)n, 0};
+    if (exchange_report(fd, rep, WRITE, 0x02, 0x02, data)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -374,25 +434,11 @@ static int device_show_dpi(int fd) {
     }
     uint8_t addr = 0x0c + 4 * profile_idx;
     uint8_t report[REPORT_SIZE] = {0};
-    report[0] = 0x08;
-    report[1] = 0x08;
-    report[4] = addr;
-    report[5] = 0x04; //amount of bytes to read
-    add_checksums(report);
-
-    if (send_report(fd, report)) {
-        return -1;
-    }
-    if (read_report(fd, report)) {
-        return -1;
-    }
-    if (check_response(report)) {
-        fprintf(stderr, "Invalid report\n");
+    if (exchange_report(fd, report, READ, addr, 0x04, NULL)) {
         return -1;
     }
     int dpi;
     if (decode_dpi(report, &dpi)) {
-        fprintf(stderr, "Fail to decode dpi\n");
         return -1;
     }
     printf("%d\n", dpi);
@@ -408,10 +454,10 @@ static int device_set_dpi(int fd, int dpi) {
     }
     uint8_t addr = 0x0c + 4 * profile_idx;
     uint8_t report[REPORT_SIZE] = {0};
-    report[0] = 0x08;
-    report[1] = 0x07;
-    report[4] = addr;
-    report[5] = 0x04; //amount of bytes to write
+    if (exchange_report(fd, report, WRITE, addr, 0x04, NULL)) {
+        fprintf(stderr, "Fail to exchange\n");
+        return -1;
+    } 
     if (encode_dpi(report, dpi)) {
         fprintf(stderr, "Invalid value\n");
         return -1;
@@ -454,12 +500,12 @@ static int execute_command(const struct parsed_args *args, int fd) {
     case CMD_PROFILE:
         return args->action == ACTION_SHOW
             ? device_show_profile(fd)
-            : device_set_profile(args->value);
+            : device_set_profile(fd, args->value);
 
     case CMD_PROFILES:
         return args->action == ACTION_SHOW
-            ? device_show_profiles()
-            : device_set_profiles(args->value);
+            ? device_show_profiles(fd)
+            : device_set_profiles(fd, args->value);
 
     case CMD_DPI:
         return args->action == ACTION_SHOW
@@ -488,7 +534,7 @@ static void print_usage(const char *prog) {
         "Usage:\n"
         "  %s profile [show|set <0..5>]\n"
         "  %s profiles [show|set <1..6>]\n"
-        "  %s dpi [show|set <400..26000, step 50>]\n"
+        "  %s dpi [show|set <50..26000, step 50>]\n"
         "  %s freq [show|set <125|500|1000|2000|4000>]\n"
         "  %s timetosleep [show|set <10s|...|60s|1m|...|20m>]\n"
         "  %s battery\n",
