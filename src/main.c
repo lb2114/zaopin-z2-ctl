@@ -199,17 +199,17 @@ int decode_dpi(const uint8_t report[REPORT_SIZE], int *dpi) {
     return 0;
 }
 
-int encode_dpi(uint8_t report[REPORT_SIZE], int dpi) {
-    if (dpi < 400 || dpi > 26000 || dpi % 50 != 0) {
+int encode_dpi(uint8_t data[4], int dpi) {
+    if (dpi < 50 || dpi > 26000 || dpi % 50 != 0) {
         return -1;
     }
 
     uint16_t n = dpi / 50 - 1;
 
-    report[6] = n & 0xFF;
-    report[7] = n & 0xFF;
-    report[8] = (n >> 8) * 0x44;
-    report[9] = (uint8_t)(0x55 - report[6] - report[7] - report[8]);
+    data[0] = n & 0xFF;
+    data[1] = n & 0xFF;
+    data[2] = (n >> 8) * 0x44;
+    data[3] = (uint8_t)(0x55 - data[0] - data[1] - data[2]);
 
     return 0;
 }
@@ -372,7 +372,7 @@ static int device_show_profile(int fd) {
     if (get_active_profile(fd, &profile)) {
         return -1;
     }
-    printf("%d\n", profile);
+    printf("%d\n", profile + 1);
     return 0;
 }
 
@@ -452,21 +452,18 @@ static int device_set_dpi(int fd, int dpi) {
         fprintf(stderr, "Fail to read profile\n");
         return -1;
     }
-    uint8_t addr = 0x0c + 4 * profile_idx;
-    uint8_t report[REPORT_SIZE] = {0};
-    if (exchange_report(fd, report, WRITE, addr, 0x04, NULL)) {
-        fprintf(stderr, "Fail to exchange\n");
-        return -1;
-    } 
-    if (encode_dpi(report, dpi)) {
+    uint8_t data[4];
+    if (encode_dpi(data, dpi)) {
         fprintf(stderr, "Invalid value\n");
         return -1;
     }
-    add_checksums(report);
-
-    if (send_report(fd, report)) {
+    uint8_t addr = 0x0c + 4 * profile_idx;
+    uint8_t report[REPORT_SIZE] = {0};
+    if (exchange_report(fd, report, WRITE, addr, 0x04, data)) {
+        fprintf(stderr, "Fail to exchange\n");
         return -1;
-    }
+    } 
+    
     return 0;
 }
 
