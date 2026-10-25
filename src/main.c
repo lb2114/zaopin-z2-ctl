@@ -63,6 +63,37 @@ void add_checksums(uint8_t response[REPORT_SIZE]) {
 }
 
 
+int decode_freq(uint8_t code) {
+    switch (code) {
+        case 0x08: return 125;
+        case 0x04: return 250;
+        case 0x02: return 500;
+        case 0x01: return 1000;
+        case 0x10: return 2000;
+        case 0x20: return 4000;
+        default: return -1;
+    }
+}
+
+int encode_freq(uint8_t data[2], int hz) {
+    uint8_t code;
+
+    switch (hz) {
+        case 125:  code = 0x08; break;
+        case 250:  code = 0x04; break;
+        case 500:  code = 0x02; break;
+        case 1000: code = 0x01; break;
+        case 2000: code = 0x10; break;
+        case 4000: code = 0x20; break;
+        default: return -1;
+    }
+
+    data[0] = code;
+    data[1] = (uint8_t)(0x55 - code);
+
+    return 0;
+}
+
 
 int send_report(int fd, uint8_t report[REPORT_SIZE]) {
     int r = ioctl(fd, HIDIOCSOUTPUT(REPORT_SIZE), report);
@@ -327,15 +358,7 @@ static int parse_args(int argc, char *argv[],
         break;
 
     case CMD_FREQ:
-        /*
-         * Подтверждены: 125, 500, 1000, 2000 Гц.
-         * 4000 Гц добавлены, но поддержка не проверена.
-         * 250 Гц также не проверены.
-         *
-         * TODO: проверить по протоколу возможность
-         * установки произвольных значений.
-         */
-        if (value != 125 && value != 500 &&
+        if (value != 125 && value != 250 && value != 500 &&
             value != 1000 && value != 2000 &&
             value != 4000) {
             return -1;
@@ -460,20 +483,37 @@ static int device_set_dpi(int fd, int dpi) {
     uint8_t addr = 0x0c + 4 * profile_idx;
     uint8_t report[REPORT_SIZE] = {0};
     if (exchange_report(fd, report, WRITE, addr, 0x04, data)) {
-        fprintf(stderr, "Fail to exchange\n");
         return -1;
     } 
     
     return 0;
 }
 
-static int device_show_freq(void) {
-    puts("[stub] show polling rate");
+static int device_show_freq(int fd) {
+    int val;
+    uint8_t report[REPORT_SIZE];
+    if (exchange_report(fd, report, READ, 0x00, 0x02, NULL)) {
+       return -1; 
+    }
+    val = decode_freq(report[6]); 
+    if (val == -1) {
+        fprintf(stderr, "Incorrect value\n");
+        return -1;
+    }
+    printf("%dHz\n", val);
     return 0;
 }
 
-static int device_set_freq(int n) {
-    printf("[stub] set polling rate to %d Hz\n", n);
+static int device_set_freq(int fd, int hz) {
+    uint8_t report[REPORT_SIZE];
+    uint8_t data[2];
+    if (encode_freq(data, hz)) {
+        fprintf(stderr, "Invalid value\n");
+        return -1;
+    }
+    if (exchange_report(fd, report, WRITE, 0x00, 0x02, data)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -511,8 +551,8 @@ static int execute_command(const struct parsed_args *args, int fd) {
 
     case CMD_FREQ:
         return args->action == ACTION_SHOW
-            ? device_show_freq()
-            : device_set_freq(args->value);
+            ? device_show_freq(fd)
+            : device_set_freq(fd, args->value);
 
     case CMD_TIMETOSLEEP:
         return args->action == ACTION_SHOW
@@ -532,7 +572,7 @@ static void print_usage(const char *prog) {
         "  %s profile [show|set <0..5>]\n"
         "  %s profiles [show|set <1..6>]\n"
         "  %s dpi [show|set <50..26000, step 50>]\n"
-        "  %s freq [show|set <125|500|1000|2000|4000>]\n"
+        "  %s freq [show|set <125|250|500|1000|2000|4000>]\n"
         "  %s timetosleep [show|set <10s|...|60s|1m|...|20m>]\n"
         "  %s battery\n",
         prog, prog, prog, prog, prog, prog);
