@@ -19,6 +19,7 @@
 
 #define READ 0x08
 #define WRITE 0x07
+#define BATTERY 0x04
 
 
 enum command {
@@ -183,7 +184,7 @@ int read_report(int fd, uint8_t report[REPORT_SIZE]) {
 
 int check_response(uint8_t report[REPORT_SIZE]) {
     if (report[0] != 0x08 ||
-            report[1] != 0x08) {
+            report[1] != 0x08 && report[1] != 0x04) { // 0x08 - response msg, 0x04 - battery response msg
         return -1;
     }
     uint8_t sum = 0;
@@ -198,8 +199,7 @@ int check_response(uint8_t report[REPORT_SIZE]) {
 
 
 int exchange_report(int fd, uint8_t rep[REPORT_SIZE], uint8_t cmd, uint8_t addr, uint8_t size, uint8_t* data) {
-    if (cmd != READ && cmd != WRITE ||
-            size > 0x0A) {
+    if (cmd != READ && cmd != WRITE && cmd != BATTERY || size > 0x0A) {
         fprintf(stderr, "invalid cmd idx\n");
         return -1;
     }
@@ -220,11 +220,11 @@ int exchange_report(int fd, uint8_t rep[REPORT_SIZE], uint8_t cmd, uint8_t addr,
     if (send_report(fd, rep)) {
         return -1;
     }
-    if (cmd == READ) {
+    if (cmd == READ || cmd == BATTERY) {
         if (read_report(fd, rep)) {
             return -1;
         }
-        if (rep[4] != addr || rep[5] != size) {
+        if (cmd != BATTERY && (rep[4] != addr || rep[5] != size)) {
             fprintf(stderr, "Unexpected response address or size\n");
             return -1;
         }
@@ -582,8 +582,15 @@ static int device_set_sleep(int fd, int seconds) {
     return 0;
 }
 
-static int device_show_battery(void) {
-    puts("[stub] show battery");
+static int device_show_battery(int fd) {
+    uint8_t report[REPORT_SIZE];
+    if (exchange_report(fd, report, BATTERY, 0x00, 0x00, NULL)) {
+        return -1;
+    }
+    if (report[7]) {
+        printf("Charging\n");
+    }
+    printf("%d%%\n", (int)(report[6]));
     return 0;
 }
 
@@ -615,7 +622,7 @@ static int execute_command(const struct parsed_args *args, int fd) {
             : device_set_sleep(fd, args->value);
 
     case CMD_BATTERY:
-        return device_show_battery();
+        return device_show_battery(fd);
     }
 
     return -1;
