@@ -42,6 +42,21 @@ struct parsed_args {
 };
 
 
+void print_time(int sec) {
+    int min = sec / 60;
+    sec %= 60;
+
+    if (min > 0) {
+        printf("%dm", min);
+    }
+
+    if (sec > 0 || min == 0) {
+        printf("%s%ds", min > 0 ? " " : "", sec);
+    }
+
+    putchar('\n');
+}
+
 void add_checksums(uint8_t response[REPORT_SIZE]) {
     if (response[1] == 0x07) {
         if (response[5] == 2) {
@@ -92,6 +107,28 @@ int encode_freq(uint8_t data[2], int hz) {
     data[1] = (uint8_t)(0x55 - code);
 
     return 0;
+}
+
+
+int encode_sleep(uint8_t data[2], int seconds)  {
+    if (seconds < 10 || seconds > 2400 || seconds % 10 != 0)
+        return -1;
+
+    uint8_t value = seconds / 10;
+
+    data[0] = value;
+    data[1] = (uint8_t)(0x55 - value);
+
+    return 0;
+}
+
+int decode_sleep(uint8_t val) {
+    int seconds = val * 10;
+
+    if (seconds < 10 || seconds > 2400)
+        return -1;
+
+    return seconds;
 }
 
 
@@ -329,11 +366,7 @@ static int parse_args(int argc, char *argv[],
 
     int value;
 
-    if (out->command == CMD_TIMETOSLEEP) {
-        if (parse_sleep_time(argv[3], &value) != 0) {
-            return -1;
-        }
-    } else if (parse_int(argv[3], &value) != 0) {
+    if (parse_int(argv[3], &value) != 0) {
         return -1;
     }
 
@@ -352,20 +385,24 @@ static int parse_args(int argc, char *argv[],
 
     case CMD_DPI:
         if (value < 50 || value > 26000 ||
-            (value % 50 != 0)) {
+            value % 50 != 0) {
             return -1;
         }
         break;
 
     case CMD_FREQ:
-        if (value != 125 && value != 250 && value != 500 &&
-            value != 1000 && value != 2000 &&
-            value != 4000) {
+        if (value != 125 && value != 250 &&
+            value != 500 && value != 1000 &&
+            value != 2000 && value != 4000) {
             return -1;
         }
         break;
 
     case CMD_TIMETOSLEEP:
+        if (value < 10 || value > 2400 ||
+            value % 10 != 0) {
+            return -1;
+        }
         break;
 
     case CMD_BATTERY:
@@ -517,13 +554,31 @@ static int device_set_freq(int fd, int hz) {
     return 0;
 }
 
-static int device_show_sleep(void) {
-    puts("[stub] show sleep time");
+
+static int device_show_sleep(int fd) {
+    uint8_t report[REPORT_SIZE];
+    if (exchange_report(fd, report, READ, 0xAD, 0x02, NULL)) {
+        return -1;
+    }
+    int sec = decode_sleep(report[6]);
+    if (sec == -1) {
+        fprintf(stderr, "Invalid value\n");
+        return -1;
+    }
+    print_time(sec);
     return 0;
 }
 
-static int device_set_sleep(int seconds) {
-    printf("[stub] set sleep time to %d seconds\n", seconds);
+static int device_set_sleep(int fd, int seconds) {
+    uint8_t report[REPORT_SIZE];
+    uint8_t data[2];
+    if (encode_sleep(data, seconds)) {
+        fprintf(stderr, "Invalid value\n");
+        return -1;
+    }
+    if (exchange_report(fd, report, WRITE, 0xAD, 0x02, data)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -556,8 +611,8 @@ static int execute_command(const struct parsed_args *args, int fd) {
 
     case CMD_TIMETOSLEEP:
         return args->action == ACTION_SHOW
-            ? device_show_sleep()
-            : device_set_sleep(args->value);
+            ? device_show_sleep(fd)
+            : device_set_sleep(fd, args->value);
 
     case CMD_BATTERY:
         return device_show_battery();
