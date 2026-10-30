@@ -11,9 +11,16 @@ SOURCES = $(wildcard $(SRC_DIR)/*.c)
 OBJECTS = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 DEPS = $(OBJECTS:.o=.d)
 
+PREFIX = /usr/local
+UDEVDIR = /etc/udev/rules.d
+
 .PHONY: all clean
 
 all: $(TARGET)
+
+install: $(TARGET)
+	install -Dm755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/zaopinctl
+	install -Dm644 udev/70-zaopin-z2.rules $(DESTDIR)$(UDEVDIR)/70-zaopin-z2.rules
 
 $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) -o $@ $(LDLIBS)

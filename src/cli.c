@@ -24,30 +24,6 @@ static int parse_int(const char *text, int *result) {
     return 0;
 }
 
-static int parse_sleep_time(const char *text, int *seconds) {
-    char *end;
-    errno = 0;
-    long n = strtol(text, &end, 10);
-
-    if (errno == ERANGE || end == text ||
-        end[0] == '\0' || end[1] != '\0') {
-        return -1;
-    }
-
-    if (end[0] == 's' &&
-        n >= 10 && n <= 60 && n % 10 == 0) {
-        *seconds = (int)n;
-        return 0;
-    }
-
-    if (end[0] == 'm' && n >= 1 && n <= 20) {
-        *seconds = (int)(n * 60);
-        return 0;
-    }
-
-    return -1;
-}
-
 int parse_args(int argc, char *argv[],
                       struct parsed_args *out) {
     if (out == NULL || argc < 2) {

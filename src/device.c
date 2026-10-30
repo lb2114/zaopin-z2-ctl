@@ -61,7 +61,7 @@ static int read_report(int fd, uint8_t report[REPORT_SIZE]) {
 
 
 static int exchange_report(int fd, uint8_t rep[REPORT_SIZE], uint8_t cmd, uint8_t addr, uint8_t size, uint8_t* data) {
-    if (cmd != READ && cmd != WRITE && cmd != BATTERY || size > 0x0A) {
+    if ((cmd != READ && cmd != WRITE && cmd != BATTERY) || size > 0x0A) {
         fprintf(stderr, "invalid cmd idx\n");
         return -1;
     }
