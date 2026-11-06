@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
-CPPFLAGS = -Isrc $(shell pkg-config --cflags libsystemd)
+CPPFLAGS = -Isrc -Iinclude $(shell pkg-config --cflags libsystemd)
 LDLIBS = $(shell pkg-config --libs libsystemd)
 
 SRC_DIR = src

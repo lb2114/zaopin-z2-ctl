@@ -155,11 +155,11 @@ int execute_command(const struct parsed_args *args, int fd) {
 void print_usage(const char *prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s profile [show|set <0..5>]\n"
+        "  %s profile [show|set <1..6>]\n"
         "  %s profiles [show|set <1..6>]\n"
         "  %s dpi [show|set <50..26000, step 50>]\n"
         "  %s freq [show|set <125|250|500|1000|2000|4000>]\n"
-        "  %s timetosleep [show|set <10s|...|60s|1m|...|20m>]\n"
+        "  %s timetosleep [show|set <10..2400 seconds, step 10>]\n"
         "  %s battery\n",
         prog, prog, prog, prog, prog, prog);
 }
